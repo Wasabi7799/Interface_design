@@ -136,15 +136,10 @@ CSS = """
 
 st.markdown(CSS, unsafe_allow_html=True)
 
-DEFAULTS = {
-    "name": "",
-    "dept": "資訊工程系",
-    "other_dept": "",
-    "rating": 3,
-    "comment": "",
-}
-for key, val in DEFAULTS.items():
-    st.session_state.setdefault(key, val)
+st.session_state.setdefault("form_version", 0)
+st.session_state.setdefault("last_submission", None)
+
+version = st.session_state["form_version"]
 
 st.markdown(
     """
@@ -156,27 +151,27 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-name = st.text_input("姓名", key="name", placeholder="請輸入您的姓名")
+name = st.text_input("姓名", key=f"name_{version}", placeholder="請輸入您的姓名")
 
 dept = st.selectbox(
     "科系",
     ["資訊工程系", "電子工程系", "其他"],
-    key="dept",
+    key=f"dept_{version}",
 )
 
 other_dept = ""
 if dept == "其他":
     other_dept = st.text_input(
         "請輸入您的科系名稱",
-        key="other_dept",
+        key=f"other_dept_{version}",
         placeholder="例如：機械工程系",
     )
 
-rating = st.slider("課程滿意度", min_value=1, max_value=5, key="rating")
+rating = st.slider("課程滿意度", min_value=1, max_value=5, value=3, key=f"rating_{version}")
 
 comment = st.text_area(
     "意見回饋",
-    key="comment",
+    key=f"comment_{version}",
     placeholder="請分享您對課程的建議或想法...",
     height=140,
 )
@@ -185,16 +180,27 @@ submitted = st.button("送出")
 
 if submitted:
     final_dept = other_dept.strip() if dept == "其他" else dept
+    final_name = name.strip()
 
-    if not st.session_state["name"].strip():
+    if not final_name:
         st.warning("請填寫姓名。")
     elif dept == "其他" and not final_dept:
         st.warning("請輸入您的科系名稱。")
     else:
-        st.markdown('<div class="thanks">✅ 感謝您的回饋!</div>', unsafe_allow_html=True)
-        st.write(f"**{st.session_state['name'].strip()}** ｜ 科系：{final_dept} ｜ 滿意度：{rating} / 5")
-        if st.session_state["comment"].strip():
-            st.caption("您的意見已成功送出，感謝您的支持！")
+        st.session_state["last_submission"] = {
+            "name": final_name,
+            "dept": final_dept,
+            "rating": rating,
+            "has_comment": bool(comment.strip()),
+        }
+        st.session_state["form_version"] = version + 1
+        st.rerun()
 
-        for key, val in DEFAULTS.items():
-            st.session_state[key] = val
+if st.session_state["last_submission"]:
+    record = st.session_state["last_submission"]
+    st.markdown('<div class="thanks">✅ 感謝您的回饋!</div>', unsafe_allow_html=True)
+    st.write(
+        f"**{record['name']}** ｜ 科系：{record['dept']} ｜ 滿意度：{record['rating']} / 5"
+    )
+    if record["has_comment"]:
+        st.caption("您的意見已成功送出，感謝您的支持！")
