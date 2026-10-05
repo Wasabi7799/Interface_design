@@ -33,37 +33,92 @@ CSS = """
         color: #9aa4b8 !important;
         font-size: 0.95rem;
     }
-    .stTextInput input, .stTextArea textarea, .stSelectbox div[data-baseweb="select"] > div {
-        background-color: rgba(255, 255, 255, 0.06) !important;
-        border: 1px solid rgba(255, 255, 255, 0.14) !important;
+
+    /* 深色輸入框 */
+    .stTextInput input,
+    .stTextArea textarea {
+        background-color: #0b0e14 !important;
+        border: 1px solid #2b3240 !important;
         border-radius: 10px !important;
-        color: #e8ecf4 !important;
+        color: #f2f5fa !important;
+        caret-color: #f2f5fa !important;
     }
-    .stTextInput input:focus, .stTextArea textarea:focus {
+    .stTextInput input::placeholder,
+    .stTextArea textarea::placeholder {
+        color: #7f8a9e !important;
+        opacity: 1 !important;
+    }
+    .stTextInput input:focus,
+    .stTextArea textarea:focus {
+        background-color: #10141c !important;
         border-color: #6c8cff !important;
         box-shadow: 0 0 0 1px #6c8cff !important;
     }
+
+    /* 深色下拉選單 */
+    .stSelectbox div[data-baseweb="select"] > div {
+        background-color: #0b0e14 !important;
+        border: 1px solid #2b3240 !important;
+        border-radius: 10px !important;
+    }
+    .stSelectbox div[data-baseweb="select"] > div:hover {
+        border-color: #3d4759 !important;
+    }
+    .stSelectbox div[data-baseweb="select"] * {
+        color: #f2f5fa !important;
+    }
+    .stSelectbox div[role="listbox"],
+    .stSelectbox ul[role="listbox"] {
+        background-color: #0b0e14 !important;
+        border: 1px solid #2b3240 !important;
+    }
+    .stSelectbox li,
+    .stSelectbox div[role="option"] {
+        background-color: #0b0e14 !important;
+        color: #f2f5fa !important;
+    }
+    .stSelectbox li:hover,
+    .stSelectbox div[role="option"]:hover {
+        background-color: #1b2130 !important;
+        color: #ffffff !important;
+    }
+    .stSelectbox svg { fill: #f2f5fa !important; }
+
+    /* 表單容器 */
     div[data-testid="stForm"] {
         background: rgba(255, 255, 255, 0.035);
         border: 1px solid rgba(255, 255, 255, 0.09);
         border-radius: 16px;
         padding: 28px 26px;
     }
-    .stButton > button {
+
+    /* 深色送出按鈕 */
+    .stButton > button,
+    .stFormSubmitButton > button {
         width: 100%;
-        background: linear-gradient(135deg, #5b7cfa 0%, #8a5bfa 100%);
-        border: none;
+        background: linear-gradient(135deg, #2f3c74 0%, #43307a 100%);
+        border: 1px solid #4d5da3;
         border-radius: 10px;
-        color: #ffffff;
+        color: #f2f5fa !important;
         font-size: 1.05rem;
         font-weight: 600;
         padding: 0.65rem 1rem;
-        transition: transform 0.15s ease, filter 0.15s ease;
+        box-shadow: none;
+        transition: filter 0.15s ease, transform 0.15s ease;
     }
-    .stButton > button:hover {
-        filter: brightness(1.12);
+    .stButton > button:hover,
+    .stFormSubmitButton > button:hover {
+        background: linear-gradient(135deg, #3a4a8c 0%, #523b91 100%);
+        border-color: #6c8cff;
+        color: #ffffff !important;
+        filter: none;
         transform: translateY(-1px);
     }
+    .stButton > button:active,
+    .stFormSubmitButton > button:active {
+        transform: translateY(0);
+    }
+
     .thanks {
         background: rgba(46, 204, 113, 0.12);
         border: 1px solid rgba(46, 204, 113, 0.45);
@@ -81,6 +136,16 @@ CSS = """
 
 st.markdown(CSS, unsafe_allow_html=True)
 
+DEFAULTS = {
+    "name": "",
+    "dept": "資訊工程系",
+    "other_dept": "",
+    "rating": 3,
+    "comment": "",
+}
+for key, val in DEFAULTS.items():
+    st.session_state.setdefault(key, val)
+
 st.markdown(
     """
     <div class="header-card">
@@ -91,27 +156,45 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-with st.form("feedback_form", clear_on_submit=True):
-    name = st.text_input("姓名", placeholder="請輸入您的姓名")
+name = st.text_input("姓名", key="name", placeholder="請輸入您的姓名")
 
-    dept = st.selectbox(
-        "科系",
-        ["資訊工程系", "電子工程系", "其他"],
-        index=0,
+dept = st.selectbox(
+    "科系",
+    ["資訊工程系", "電子工程系", "其他"],
+    key="dept",
+)
+
+other_dept = ""
+if dept == "其他":
+    other_dept = st.text_input(
+        "請輸入您的科系名稱",
+        key="other_dept",
+        placeholder="例如：機械工程系",
     )
 
-    rating = st.slider("課程滿意度", min_value=1, max_value=5, value=3)
+rating = st.slider("課程滿意度", min_value=1, max_value=5, key="rating")
 
-    comment = st.text_area(
-        "意見回饋",
-        placeholder="請分享您對課程的建議或想法...",
-        height=140,
-    )
+comment = st.text_area(
+    "意見回饋",
+    key="comment",
+    placeholder="請分享您對課程的建議或想法...",
+    height=140,
+)
 
-    submitted = st.form_submit_button("送出")
+submitted = st.button("送出")
 
 if submitted:
-    st.markdown('<div class="thanks">✅ 感謝您的回饋!</div>', unsafe_allow_html=True)
-    st.write(f"**{name}** ｜ 科系：{dept} ｜ 滿意度：{rating} / 5")
-    if comment:
-        st.caption("您的意見已成功送出，感謝您的支持！")
+    final_dept = other_dept.strip() if dept == "其他" else dept
+
+    if not st.session_state["name"].strip():
+        st.warning("請填寫姓名。")
+    elif dept == "其他" and not final_dept:
+        st.warning("請輸入您的科系名稱。")
+    else:
+        st.markdown('<div class="thanks">✅ 感謝您的回饋!</div>', unsafe_allow_html=True)
+        st.write(f"**{st.session_state['name'].strip()}** ｜ 科系：{final_dept} ｜ 滿意度：{rating} / 5")
+        if st.session_state["comment"].strip():
+            st.caption("您的意見已成功送出，感謝您的支持！")
+
+        for key, val in DEFAULTS.items():
+            st.session_state[key] = val
