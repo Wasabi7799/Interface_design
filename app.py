@@ -1,6 +1,7 @@
 """課程回饋表單 - Streamlit (Dark Mode)"""
 
 import streamlit as st
+import psycopg
 
 st.set_page_config(page_title="課程回饋表單", page_icon="📝", layout="centered")
 
@@ -204,3 +205,32 @@ if st.session_state["last_submission"]:
     )
     if record["has_comment"]:
         st.caption("您的意見已成功送出，感謝您的支持！")
+
+
+#
+# SQL Database Integration (Optional)
+#
+st.divider()
+st.header("📢 最新公告 ")
+
+try:
+    conn = psycopg.connect(st.secrets["DATABASE_URL"])
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT title, content, created_at
+    FROM announcements_announcement
+    ORDER BY created_at DESC
+    """)
+    announcements = cursor.fetchall()
+    if announcements:
+        for title, content, created_at in announcements:
+            st.subheader(title)
+            st.write(content)
+            st.caption(f" 發布時間： {created_at}")
+    else:
+        st.info(" 目前沒有公告 ")
+        cursor.close()
+        conn.close()
+except Exception as e:
+    st.error(" 目前無法讀取公告資料 ")
+    st.exception(e)
