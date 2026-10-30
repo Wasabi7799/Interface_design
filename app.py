@@ -9,6 +9,16 @@ import streamlit as st
 from catalog import CATEGORIES, DISTRICTS, MAIN_CATEGORIES, MOCK_LISTINGS
 
 st.set_page_config(page_title="CL Taipei", page_icon="CL", layout="wide")
+# 隱藏上方 Header、選單以及底部的 Footer
+hide_streamlit_style = """
+    <style>
+    #MainMenu {visibility: hidden;}
+    header {visibility: hidden;}
+    footer {visibility: hidden;}
+    </style>
+"""
+
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 TEXT = {
 "zh-TW": {"home":"首頁","tagline":"在台北找到你需要的","intro":"探索在地的住居、服務、工作與好物。","search":"搜尋","search_hint":"搜尋貼文","login":"登入","register":"註冊","logout":"登出","post":"刊登","account":"我的帳號","theme":"主題","language":"語言","light":"明亮","dark":"黑暗","english":"English","chinese":"中文","browse":"瀏覽分類","count_subs":"{count} 個子分類","latest":"最新公告","no_announcements":"目前沒有公告","about":"關於本站","terms":"服務條款","privacy":"隱私政策","subcategories":"子分類","topics":"討論主題","all_listings":"查看全部","results":"共 {count} 筆","keyword":"關鍵字","min_price":"最低價格","max_price":"最高價格","district":"地區","all_districts":"所有地區","sort":"排序","newest":"最新","price_low":"價格低到高","price_high":"價格高到低","nearest":"距離最近","clear":"清除篩選","load_more":"載入更多","no_results":"找不到符合條件的貼文","price":"價格","negotiable":"面議","location":"地點","published":"發佈","views":"瀏覽次數","favorite":"收藏","unfavorite":"移除收藏","contact":"聯絡賣家","share":"複製連結","report":"檢舉","sold":"已售出","expired":"已過期","active":"刊登中","draft":"草稿","seller":"賣家資訊","member_since":"加入時間","description":"描述","back":"返回列表","login_required":"請先登入以繼續此操作。","email":"Email","password":"密碼","remember":"記住我","invalid_login":"Email 或密碼不正確。","display_name":"顯示名稱","confirm_password":"確認密碼","agree_terms":"我同意服務條款","password_rule":"密碼至少 8 碼，且包含英文字母與數字。","password_mismatch":"兩次密碼輸入不一致。","favorites":"我的收藏","my_listings":"我的刊登","messages":"訊息","notifications":"通知","settings":"設定","save":"儲存","edit":"編輯","mark_sold":"標記售出","delete":"刪除","empty_favorites":"尚未收藏任何貼文","empty_listings":"尚無刊登","empty_messages":"目前沒有訊息","empty_notifications":"目前沒有通知","profile":"個人中心","new_listing":"刊登新貼文","category":"分類","subcategory":"子分類","title":"標題","title_hint":"4–80 字","description_hint":"10–4000 字","negotiable_check":"面議","images":"圖片","contact_method":"聯絡方式","internal_message":"站內私訊","show_email":"顯示 Email","save_draft":"儲存草稿","publish":"發佈","published_success":"貼文已成功發佈。","draft_success":"草稿已儲存。","form_error":"請檢查欄位內容後再試一次。","image_error":"圖片必須為 jpg、png 或 webp，且每張不超過 5MB。","report_reason":"檢舉原因","report_note":"補充說明（選填）","report_sent":"已收到檢舉。","send":"送出","message_hint":"輸入訊息（1–1000 字）","message_sent":"訊息已送出。","not_found":"找不到此頁面","not_available":"此貼文已下架","login_success":"登入成功。","register_success":"註冊成功，請至信箱完成驗證。","status":"狀態","search_results":"「{query}」的搜尋結果","search_advice":"請檢查拼字、減少關鍵字，或改為瀏覽分類。","settings_saved":"偏好已儲存。","email_notification":"Email 通知","save_preferences":"儲存偏好","copyright":"CL Taipei 分類資訊平台","report_spam":"垃圾訊息","report_scam":"詐騙","report_inappropriate":"不當內容","report_category":"錯誤分類","report_other":"其他"},
