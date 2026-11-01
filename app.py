@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 from datetime import date
 
 import streamlit as st
-from catalog import CATEGORIES, DISTRICTS, MAIN_CATEGORIES, MOCK_LISTINGS
-from theme import inject_theme
+import streamlit.components.v1 as components
+from catalog_opencode import CATEGORIES, DISTRICTS, MAIN_CATEGORIES, MOCK_LISTINGS
+from theme_opencode import PALETTES, inject_theme
 
 st.set_page_config(page_title="CL Taipei", page_icon="CL", layout="wide")
 # 隱藏上方 Header、選單以及底部的 Footer
@@ -77,6 +79,12 @@ TEXT["zh-TW"].update(
         "register_subtitle": "建立帳號，開始在城市佈告欄交流。",
         "no_account": "還沒有帳號？",
         "have_account": "已經有帳號？",
+        "thousand": "千",
+        "thousand_hint": "乘以 1,000",
+        "price_range": "價格範圍",
+        "tag_filter": "標籤選擇",
+        "views_label": "瀏覽",
+        "link_copied": "已複製連結",
     }
 )
 TEXT["en"].update(
@@ -93,6 +101,12 @@ TEXT["en"].update(
         "register_subtitle": "Create an account to join the city board.",
         "no_account": "Don't have an account?",
         "have_account": "Already have an account?",
+        "thousand": "Thousands",
+        "thousand_hint": "multiply by 1,000",
+        "price_range": "Price range",
+        "tag_filter": "Tag filter",
+        "views_label": "views",
+        "link_copied": "Link copied",
     }
 )
 
@@ -226,14 +240,31 @@ def section_head(title, meta=""):
     )
 
 
+def crumb_key(index, target):
+    raw = f"{index}-{target.get('page', '')}-{target.get('category', '')}-{target.get('sub', '')}-{target.get('id', '')}"
+    return "crumb_" + re.sub(r"[^0-9A-Za-z_-]+", "_", raw)
+
+
 def crumbs(*parts):
-    nodes = []
-    for index, part in enumerate(parts):
-        if index:
-            nodes.append("<span class='sep'>/</span>")
-        label = html.escape(part)
-        nodes.append(f"<strong>{label}</strong>" if index == len(parts) - 1 else f"<span>{label}</span>")
-    st.markdown("<div class='crumbs'>" + "".join(nodes) + "</div>", unsafe_allow_html=True)
+    with st.container(horizontal=True, key="crumbs", gap="small", vertical_alignment="center"):
+        for index, part in enumerate(parts):
+            if index:
+                st.markdown("<span class='crumb-sep'>/</span>", unsafe_allow_html=True)
+            if isinstance(part, tuple):
+                label, target = part
+            else:
+                label, target = part, None
+            if target is None:
+                st.markdown(
+                    f"<span class='crumb-current'>{html.escape(label)}</span>",
+                    unsafe_allow_html=True,
+                )
+            elif st.button(
+                label,
+                key=crumb_key(index, target),
+                type="tertiary",
+            ):
+                route(**target)
 
 
 def page_head(title, eyebrow="", subtitle="", badge=""):
@@ -277,16 +308,80 @@ def favorite(listing_id, key):
             st.rerun()
 
 
+def copy_link_button(url):
+    palette = PALETTES.get(st.session_state["theme"], PALETTES["light"])
+    fallback_url = json.dumps(url or "", ensure_ascii=False)
+    button_text = json.dumps(t("share"), ensure_ascii=False)
+    copied_text = json.dumps(t("link_copied"), ensure_ascii=False)
+    components.html(
+        f"""
+        <style>
+        html,body{{margin:0;background:transparent;}}
+        #copy-link{{
+          width:100%;height:38px;border:1px solid {palette['border']};border-radius:8px;
+          background:transparent;color:{palette['text']};cursor:pointer;
+          font:500 14px/1 Inter,"Noto Sans TC",system-ui,sans-serif;
+          transition:background .16s ease,border-color .16s ease,color .16s ease;
+        }}
+        #copy-link:hover{{border-color:{palette['primary']};color:{palette['primary']};background:{palette['soft']};}}
+        </style>
+        <button id="copy-link" type="button">{html.escape(t("share"))}</button>
+        <script>
+        const fallbackUrl = {fallback_url};
+        const button = document.getElementById("copy-link");
+        const original = {button_text};
+        const copied = {copied_text};
+        function parentUrl() {{
+          try {{ return window.parent.location.href; }}
+          catch (error) {{ return fallbackUrl || document.referrer; }}
+        }}
+        async function writeClipboard(text) {{
+          if (navigator.clipboard && window.isSecureContext) {{
+            await navigator.clipboard.writeText(text);
+            return;
+          }}
+          const area = document.createElement("textarea");
+          area.value = text;
+          area.style.position = "fixed";
+          area.style.opacity = "0";
+          document.body.appendChild(area);
+          area.select();
+          document.execCommand("copy");
+          area.remove();
+        }}
+        button.addEventListener("click", async () => {{
+          try {{
+            await writeClipboard(parentUrl() || fallbackUrl);
+            button.textContent = copied;
+          }} catch (error) {{
+            button.textContent = copied;
+          }}
+          setTimeout(() => {{ button.textContent = original; }}, 1600);
+        }});
+        </script>
+        """,
+        height=44,
+        scrolling=False,
+    )
+
+
 def category_card(index, item):
     slug, english, chinese, icon = item
     main, other = (chinese, english) if st.session_state["lang"] == "zh-TW" else (english, chinese)
+    preview = subs(slug)[:6]
+    sub_chips = "".join(
+        f"<span>{html.escape(cname(sub['slug']))}</span>" for sub in preview
+    )
     with st.container(border=True, key=f"catcard_{slug}"):
         st.markdown(
             f"<div class='cat-top'><span class='cat-num'>{index + 1:02d}</span>"
             f"<span class='cat-ico'>{html.escape(icon)}</span></div>"
             f"<div class='cat-title'>{html.escape(main)}</div>"
             f"<p class='cat-en'>{html.escape(other)}</p>"
-            f"<div class='cat-foot'>{html.escape(t('count_subs', count=len(subs(slug))))}</div>",
+            f"<div class='cat-foot'><span>{html.escape(t('count_subs', count=len(subs(slug))))}</span>"
+            f"<span class='cat-cta'>{html.escape(t('browse'))} →</span></div>"
+            f"<div class='cat-subs'><p class='cat-subs-title'>{html.escape(t('subcategories'))}</p>"
+            f"<div class='cat-subs-list'>{sub_chips}</div></div>",
             unsafe_allow_html=True,
         )
         if st.button(f"{t('browse')} →", key=f"catbtn_{slug}", type="tertiary"):
@@ -339,7 +434,7 @@ def category_page(cat):
         return not_found()
     items = subs(cat)
     count = len([row for row in all_listings() if row["category"] == cat])
-    crumbs(t("home"), cname(cat))
+    crumbs((t("home"), {"page": "home"}), cname(cat))
     page_head(
         cname(cat),
         eyebrow=alt_name(cat),
@@ -353,12 +448,13 @@ def category_page(cat):
                 st.markdown(
                     f"<div class='cat-top'><span class='cat-num'>{index + 1:02d}</span></div>"
                     f"<div class='cat-title'>{html.escape(cname(item['slug']))}</div>"
-                    f"<p class='cat-en'>{html.escape(alt_name(item['slug']))}</p>",
+                    f"<p class='cat-en'>{html.escape(alt_name(item['slug']))}</p>"
+                    f"<div class='cat-foot'><span class='cat-cta'>{html.escape(t('browse'))} →</span></div>",
                     unsafe_allow_html=True,
                 )
                 if st.button(
                     f"{t('browse')} →",
-                    key=f"sub_{cat}_{item['slug']}",
+                    key=f"subbtn_{cat}_{item['slug']}",
                     type="tertiary",
                 ):
                     route(page="list", category=cat, sub=item["slug"])
@@ -369,10 +465,11 @@ def category_page(cat):
 def matches(cat=None, sub=None, q="", district="", low=None, high=None):
     out = []
     needle = q.lower().strip()
+    districts = {item for item in str(district).split(",") if item}
     for row in all_listings():
         if cat and row["category"] != cat or sub and row["sub"] != sub:
             continue
-        if district and row["district"] != district:
+        if districts and row["district"] not in districts:
             continue
         if needle and needle not in (row["title"] + " " + row["description"]).lower():
             continue
@@ -387,8 +484,14 @@ def matches(cat=None, sub=None, q="", district="", low=None, high=None):
 def listing_list(cat=None, sub=None, q=""):
     heading = " / ".join([cname(item) for item in (cat, sub) if item])
     if heading:
-        crumbs(t("home"), *[cname(item) for item in (cat, sub) if item])
+        parts = [(t("home"), {"page": "home"})]
+        if cat:
+            parts.append((cname(cat), {"page": "category", "category": cat}))
+        if sub:
+            parts.append((cname(sub), {"page": "list", "category": cat, "sub": sub}))
+        crumbs(*parts)
     params = st.query_params
+    max_units = 20_000
     initial_q = q or str(params.get("q", ""))
     try:
         initial_low = int(str(params.get("low", "0")) or 0)
@@ -399,7 +502,11 @@ def listing_list(cat=None, sub=None, q=""):
     except ValueError:
         initial_high = 9999999
     initial_district = str(params.get("district", ""))
+    initial_districts = [item for item in initial_district.split(",") if item in DISTRICTS]
     initial_sort = str(params.get("sort", "newest"))
+    has_low = bool(str(params.get("low", "")))
+    has_high = bool(str(params.get("high", "")))
+    thousand_default = str(params.get("k", "")) == "1"
     result_count = len(
         matches(
             cat,
@@ -420,49 +527,59 @@ def listing_list(cat=None, sub=None, q=""):
     with left:
         with st.container(border=True, key="filter-box"):
             st.markdown(f"<p class='eyebrow'>{html.escape(t('filters'))}</p>", unsafe_allow_html=True)
-            with st.form("filters", border=False):
-                query = st.text_input(
-                    t("keyword"), value=initial_q, max_chars=100, key=f"f_q_{cat}_{sub}"
+            thousand_key = f"f_k_{cat}_{sub}"
+            thousand_state = bool(st.session_state.get(thousand_key, thousand_default))
+            multiplier = 1000 if thousand_state else 1
+            low_seed = initial_low // multiplier if has_low else 1
+            high_seed = initial_high // multiplier if has_high else max_units
+            low_seed = max(1, min(max_units, int(round(low_seed / 500.0)) * 500))
+            high_seed = max(1, min(max_units, int(round(high_seed / 500.0)) * 500))
+            if high_seed < low_seed:
+                high_seed = low_seed
+            query = st.text_input(
+                t("keyword"), value=initial_q, max_chars=100, key=f"f_q_{cat}_{sub}"
+            )
+            low, high = st.slider(
+                t("price_range"),
+                1,
+                max_units,
+                (low_seed, high_seed),
+                step=500,
+                format="%dk" if thousand_state else "%d",
+                key=f"f_price_{cat}_{sub}",
+            )
+            thousand = st.checkbox(
+                t("thousand"),
+                value=thousand_default,
+                key=thousand_key,
+                help=t("thousand_hint"),
+            )
+            if thousand:
+                st.caption(
+                    f"{t('thousand_hint')} · NT${low * 1000:,} – "
+                    f"NT${high * 1000:,}"
                 )
-                price_cols = st.columns(2, gap="small")
-                with price_cols[0]:
-                    low = st.number_input(
-                        t("min_price"),
-                        0,
-                        9_999_999,
-                        initial_low,
-                        key=f"f_low_{cat}_{sub}",
-                    )
-                with price_cols[1]:
-                    high = st.number_input(
-                        t("max_price"),
-                        0,
-                        9_999_999,
-                        initial_high,
-                        key=f"f_high_{cat}_{sub}",
-                    )
-                district = st.selectbox(
-                    t("district"),
-                    [t("all_districts"), *DISTRICTS],
-                    index=(DISTRICTS.index(initial_district) + 1)
-                    if initial_district in DISTRICTS
-                    else 0,
-                    key=f"f_district_{cat}_{sub}",
-                )
-                submitted = st.form_submit_button(
-                    t("search"), type="primary", width="stretch"
-                )
-            if submitted:
+            districts = st.multiselect(
+                t("tag_filter"),
+                DISTRICTS,
+                default=initial_districts,
+                key=f"f_tags_{cat}_{sub}",
+            )
+            if st.button(t("search"), key="filter_submit", type="primary", width="stretch"):
                 st.session_state["list_limit"] = 20
+                actual_multiplier = 1000 if thousand else 1
+                low_value = int(low * actual_multiplier)
+                high_value = int(high * actual_multiplier)
                 route(
                     page="list",
                     category=cat or "",
                     sub=sub or "",
                     q=query.strip()[:100],
-                    low=str(int(low)) if low else "",
-                    high=str(int(high)) if high < 9_999_999 else "",
-                    district="" if district == t("all_districts") else district,
+                    low=str(low_value) if low_value > 1 else "",
+                    high=str(high_value) if high < max_units else "",
+                    district=",".join(districts),
                     sort=initial_sort,
+                    k="1" if thousand else "",
                 )
             if st.button(t("clear"), key="clear_filters", type="tertiary", width="stretch"):
                 st.session_state["list_limit"] = 20
@@ -533,7 +650,10 @@ def card(row, ns="list"):
             st.markdown(f"<div class='thumb'>{html.escape(icon)}</div>", unsafe_allow_html=True)
         with body:
             st.markdown(
+                f"<div class='card-topline'>"
                 f"<span class='badge badge-{status_class(row['status'])}'>{html.escape(str(stat))}</span>"
+                f"<span class='views-pill'>{html.escape(t('views_label'))} <strong>{row['views']}</strong></span>"
+                f"</div>"
                 f"<div class='listing-title'>{html.escape(row['title'])}</div>"
                 f"<p class='meta'>{html.escape(row['district'])} · {html.escape(str(row['created']))}</p>"
                 f"<p class='desc-snippet'>{html.escape(snippet)}</p>",
@@ -541,8 +661,7 @@ def card(row, ns="list"):
             )
         with side:
             st.markdown(
-                f"<p class='price'>{html.escape(price(row['price']))}</p>"
-                f"<p class='meta'>{html.escape(t('views'))}: {row['views']}</p>",
+                f"<p class='price'>{html.escape(price(row['price']))}</p>",
                 unsafe_allow_html=True,
             )
             if st.button(
@@ -563,7 +682,14 @@ def detail(ident):
             route(page="home")
         return
     icon = cat_icon(row["category"])
-    crumbs(t("home"), cname(row["category"]), cname(row["sub"]))
+    crumbs(
+        (t("home"), {"page": "home"}),
+        (cname(row["category"]), {"page": "category", "category": row["category"]}),
+        (
+            cname(row["sub"]),
+            {"page": "list", "category": row["category"], "sub": row["sub"]},
+        ),
+    )
     page_head(
         row["title"],
         eyebrow=f"{cname(row['category'])} / {cname(row['sub'])}",
@@ -628,8 +754,7 @@ def detail(ident):
             if st.button(t("contact"), key="contact_btn", type="primary", width="stretch"):
                 if require_login("contact", row["id"]):
                     st.session_state["contact"] = row["id"]
-            if st.button(t("share"), key="share_btn", width="stretch"):
-                st.toast(t("share"))
+            copy_link_button(st.context.url)
             if st.button(t("report"), key="report_btn", width="stretch"):
                 if require_login("report", row["id"]):
                     st.session_state["report"] = row["id"]
