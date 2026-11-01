@@ -3,7 +3,4 @@ __pycache__/
 *.pyc
 db.sqlite3
 .venv/
-venv/
-app_opencode.py
-catalog_opencode.py
-theme_opencode.py
+venv/
