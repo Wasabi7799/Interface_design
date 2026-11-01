@@ -8,8 +8,8 @@ from datetime import date
 
 import streamlit as st
 import streamlit.components.v1 as components
-from catalog_opencode import CATEGORIES, DISTRICTS, MAIN_CATEGORIES, MOCK_LISTINGS
-from theme_opencode import PALETTES, inject_theme
+from catalog import CATEGORIES, DISTRICTS, MAIN_CATEGORIES, MOCK_LISTINGS
+from theme import PALETTES, inject_theme
 
 st.set_page_config(page_title="CL Taipei", page_icon="CL", layout="wide")
 # 隱藏上方 Header、選單以及底部的 Footer
