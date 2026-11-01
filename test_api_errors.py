@@ -41,6 +41,13 @@ class ApiErrorTests(unittest.TestCase):
         self.assertIn('Email or password is incorrect.', self.errors[0])
         self.assertNotIn('Cannot reach', self.errors[0])
 
+    def test_listing_validation_identifies_category_and_district(self):
+        self.response(400, {'sub':['Unknown category/subcategory pair.'], 'district':['Unknown district.']})
+        self.assertIn('subcategory:', self.errors[0])
+        self.assertIn('後端缺少此分類', self.errors[0])
+        self.assertIn('district:', self.errors[0])
+        self.assertIn('後端缺少此地區', self.errors[0])
+
     def test_status_messages_do_not_expose_raw_backend_details(self):
         for status, expected in [(403,'權限'),(404,'找不到 API'),(429,'次數過多'),(500,'Render Logs')]:
             self.errors.clear()

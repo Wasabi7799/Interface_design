@@ -103,6 +103,12 @@ def api_listing(item):
 
 
 API_ERROR_TEXT = {
+    'unknown_category': ('後端缺少此分類或子分類，請管理員執行 seed_catalog 初始化分類資料。', 'The category or subcategory is missing on the backend. Ask the administrator to run seed_catalog.'),
+    'unknown_district': ('後端缺少此地區，請管理員執行 seed_catalog 初始化地區資料。', 'The district is missing on the backend. Ask the administrator to run seed_catalog.'),
+    'listing_title': ('標題必須為 4–80 字。', 'Title must be 4–80 characters.'),
+    'listing_description': ('描述必須為 2–400 字。', 'Description must be 2–400 characters.'),
+    'invalid_image': ('圖片內容無效，請使用 jpg、png 或 webp。', 'Invalid image content. Use jpg, png, or webp.'),
+    'large_image': ('圖片不得超過 5MB。', 'Image must not exceed 5MB.'),
     'timeout': ('連線逾時；後端可能正在啟動，請稍後重試。', 'Request timed out. The backend may be starting; please try again.'),
     'connection': ('無法連上後端，請確認 API 網址與服務狀態。', 'Cannot reach the backend. Check the API address and service status.'),
     'invalid_response': ('後端回傳非預期格式，請確認 API 網址與部署版本。', 'Unexpected response format. Check the API address and deployed version.'),
@@ -137,6 +143,12 @@ def api_error_messages(status, detail, path):
     if status not in (400, 401, 422):
         return messages
     known = {
+        'Unknown category/subcategory pair.': 'unknown_category',
+        'Unknown district.': 'unknown_district',
+        'Title must be 4–80 characters.': 'listing_title',
+        'Description must be 2–400 characters.': 'listing_description',
+        'Invalid image.': 'invalid_image',
+        'Image exceeds 5MB.': 'large_image',
         'Email or password is incorrect.': 'invalid_login',
         'This password is too common.': 'common_password',
         'This password is entirely numeric.': 'numeric_password',
@@ -147,7 +159,11 @@ def api_error_messages(status, detail, path):
         'This field is required.': 'required',
         'This field may not be blank.': 'required',
     }
-    fields = {'email': 'email', 'password': 'password', 'display_name': 'display_name'}
+    fields = {'email': 'email', 'password': 'password', 'display_name': 'display_name',
+              'category': 'category', 'sub': 'subcategory', 'district': 'district',
+              'title': 'title', 'description': 'description', 'price': 'price',
+              'negotiable': 'negotiable', 'status': 'status', 'contact_method': 'contact_method',
+              'show_email': 'show_email', 'cover_image': 'images'}
     def visit(value, field=None):
         if isinstance(value, dict):
             for key, child in value.items():
@@ -1233,7 +1249,6 @@ def post_page():
                             upload = {"cover_image": (first.name, first.getvalue(), first.type)}
                         result = api_request("POST", "listings/", payload=payload, files=upload)
                         if result is None:
-                            st.error(t("form_error"))
                             return
                         record = api_listing(result)
                         if publish:
