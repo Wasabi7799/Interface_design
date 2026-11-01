@@ -102,6 +102,73 @@ def api_listing(item):
     }
 
 
+API_ERROR_TEXT = {
+    'timeout': ('連線逾時；後端可能正在啟動，請稍後重試。', 'Request timed out. The backend may be starting; please try again.'),
+    'connection': ('無法連上後端，請確認 API 網址與服務狀態。', 'Cannot reach the backend. Check the API address and service status.'),
+    'invalid_response': ('後端回傳非預期格式，請確認 API 網址與部署版本。', 'Unexpected response format. Check the API address and deployed version.'),
+    '400': ('輸入資料未通過驗證。', 'The submitted data failed validation.'),
+    '401': ('登入驗證失敗或登入已過期，請重新登入。', 'Authentication failed or expired. Please log in again.'),
+    '403': ('沒有執行此操作的權限。', 'You do not have permission to perform this action.'),
+    '404': ('找不到 API 端點，請確認後端網址與部署版本。', 'API endpoint not found. Check the backend address and deployed version.'),
+    '429': ('嘗試次數過多，請稍候再試。', 'Too many attempts. Please wait before trying again.'),
+    'server': ('後端發生錯誤，請查看 Render Logs 中此請求的錯誤紀錄。', 'Backend error. Check the corresponding request in Render Logs.'),
+    'other': ('請求失敗，請稍後重試。', 'Request failed. Please try again later.'),
+    'invalid_login': ('Email 或密碼不正確；網站登入使用 Email。', 'Email or password is incorrect. Use your email to log in.'),
+    'common_password': ('密碼太常見，請換用較難猜測的密碼。', 'This password is too common. Choose a less predictable password.'),
+    'numeric_password': ('密碼不能全部是數字。', 'The password cannot be entirely numeric.'),
+    'short_password': ('密碼長度不足，請至少使用 8 個字元。', 'The password is too short. Use at least 8 characters.'),
+    'similar_password': ('密碼與帳號資料過於相似。', 'The password is too similar to your account information.'),
+    'password_rule': ('密碼必須包含字母與數字。', 'The password must include letters and numbers.'),
+    'account_unavailable': ('無法使用此資料註冊；Email 可能已註冊，請嘗試登入或使用其他 Email。', 'Unable to register with these details. The email may already be registered; try logging in or use another email.'),
+    'invalid_email': ('請輸入有效的 Email 地址。', 'Enter a valid email address.'),
+    'required': ('此欄位為必填。', 'This field is required.'),
+    'invalid_field': ('此欄位未通過後端驗證。', 'This field failed backend validation.'),
+}
+
+
+def api_error_text(key):
+    return API_ERROR_TEXT[key][0 if st.session_state.get('lang', 'zh-TW') == 'zh-TW' else 1]
+
+
+def api_error_messages(status, detail, path):
+    """Translate known validation errors; never render arbitrary backend bodies or credentials."""
+    code = str(status)
+    messages = [f"HTTP {status} · " + api_error_text('server' if status >= 500 else code if code in API_ERROR_TEXT else 'other')]
+    if status not in (400, 401, 422):
+        return messages
+    known = {
+        'Email or password is incorrect.': 'invalid_login',
+        'This password is too common.': 'common_password',
+        'This password is entirely numeric.': 'numeric_password',
+        'Include letters and numbers.': 'password_rule',
+        'Unable to register this account.': 'account_unavailable',
+        'This email is already registered.': 'account_unavailable',
+        'Enter a valid email address.': 'invalid_email',
+        'This field is required.': 'required',
+        'This field may not be blank.': 'required',
+    }
+    fields = {'email': 'email', 'password': 'password', 'display_name': 'display_name'}
+    def visit(value, field=None):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                visit(child, key if key in fields else field)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child, field)
+        elif isinstance(value, str):
+            key = known.get(value)
+            if value.startswith('This password is too short.'):
+                key = 'short_password'
+            elif value.startswith('The password is too similar to the '):
+                key = 'similar_password'
+            if key or field:
+                text = (t(fields[field]) + ': ' if field in fields else '') + api_error_text(key or 'invalid_field')
+                if text not in messages:
+                    messages.append(text)
+    visit(detail)
+    return messages
+
+
 def api_request(method, path, *, params=None, payload=None, files=None):
     """Make an authenticated request and refresh an expired access token once."""
     base = api_base_url()
@@ -138,19 +205,30 @@ def api_request(method, path, *, params=None, payload=None, files=None):
             st.session_state["api_error"] = None
             return {}
         if not response.ok:
-            detail = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+            try:
+                detail = response.json()
+            except ValueError:
+                detail = None
             if response.status_code == 401 and st.session_state.get('access_token'):
                 st.session_state['user'] = None
                 st.session_state['access_token'] = None
                 st.session_state['refresh_token'] = None
             st.session_state["api_error"] = response.status_code
-            st.error(t("api_failure"))
+            st.error('\n\n'.join(api_error_messages(response.status_code, detail, path)))
             return None
         st.session_state["api_error"] = None
         return response.json()
-    except (requests.RequestException, ValueError):
+    except requests.Timeout:
+        st.session_state["api_error"] = "timeout"
+        st.error(api_error_text('timeout'))
+        return None
+    except requests.RequestException:
         st.session_state["api_error"] = "unavailable"
-        st.error(t("api_failure"))
+        st.error(api_error_text('connection'))
+        return None
+    except ValueError:
+        st.session_state["api_error"] = "invalid_response"
+        st.error(api_error_text('invalid_response'))
         return None
 
 
@@ -950,7 +1028,6 @@ def login():
                     "email": email.strip(), "password": password,
                 })
                 if result is None:
-                    st.error(t("invalid_login"))
                     return
                 user = result.get("user", {})
                 st.session_state["access_token"] = result.get("access")
@@ -1039,7 +1116,6 @@ def register():
                             "display_name": name.strip(), "email": email.strip(), "password": password,
                         })
                         if result is None:
-                            st.error(t("form_error"))
                             return
                     st.success(t("register_success"))
                     route(page="login")
