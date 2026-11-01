@@ -10,8 +10,8 @@ from datetime import date
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
-from catalog import CATEGORIES, DISTRICTS, MAIN_CATEGORIES, MOCK_LISTINGS
-from theme import PALETTES, inject_theme
+from catalog_opencode import CATEGORIES, DISTRICTS, MAIN_CATEGORIES, MOCK_LISTINGS
+from theme_opencode import PALETTES, inject_theme
 
 st.set_page_config(page_title="CL Taipei", page_icon="CL", layout="wide")
 # 隱藏上方 Header、選單以及底部的 Footer
@@ -53,7 +53,7 @@ def cname(slug):
         if x["slug"] == slug: return x[field]
     return slug
 def price(v): return t("negotiable") if v is None else f"NT${v:,.0f}"
-def all_listings(): return list(MOCK_LISTINGS) + st.session_state["created"]
+def all_listings(): return list(st.session_state["created"])
 
 
 def api_base_url():
@@ -62,7 +62,10 @@ def api_base_url():
         configured = st.secrets.get("API_BASE_URL", "")
     except Exception:
         configured = ""
-    return (configured or os.getenv("CL_TAIPEI_API_BASE_URL", "")).rstrip("/")
+    address = str(configured or os.getenv("CL_TAIPEI_API_BASE_URL", "http://127.0.0.1:8000/api")).strip().rstrip("/")
+    if address and not address.endswith("/api"):
+        address += "/api"
+    return address
 
 
 def api_enabled():
@@ -127,47 +130,71 @@ def api_request(method, path, *, params=None, payload=None, files=None):
                 timeout=12,
             )
             if refresh.ok:
-                st.session_state["access_token"] = refresh.json().get("access")
+                tokens = refresh.json()
+                st.session_state["access_token"] = tokens.get("access")
+                st.session_state["refresh_token"] = tokens.get("refresh", st.session_state["refresh_token"])
                 response = send(st.session_state["access_token"])
         if response.status_code == 204:
             st.session_state["api_error"] = None
             return {}
         if not response.ok:
             detail = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
-            st.session_state["api_error"] = detail.get("detail") or detail or response.status_code
+            if response.status_code == 401 and st.session_state.get('access_token'):
+                st.session_state['user'] = None
+                st.session_state['access_token'] = None
+                st.session_state['refresh_token'] = None
+            st.session_state["api_error"] = response.status_code
+            st.error(t("api_failure"))
             return None
         st.session_state["api_error"] = None
         return response.json()
-    except requests.RequestException:
+    except (requests.RequestException, ValueError):
         st.session_state["api_error"] = "unavailable"
+        st.error(t("api_failure"))
         return None
 
 
 def remote_listings(**filters):
     if not api_enabled():
         return None
-    payload = api_request("GET", "listings/", params={key: value for key, value in filters.items() if value not in (None, "")})
-    return None if payload is None else [api_listing(item) for item in api_items(payload)]
+    params = {key: value for key, value in filters.items() if value not in (None, "")}
+    # Follow the server's pagination without trusting a remote next URL for credentials.
+    params['page_size'] = 100
+    rows = []
+    limit = st.session_state.get('list_limit', 20)
+    for page in range(1, (limit + 100) // 100 + 1):
+        params['page'] = page
+        payload = api_request('GET', 'listings/', params=params)
+        if payload is None:
+            return []
+        rows.extend(api_listing(item) for item in api_items(payload))
+        if not isinstance(payload, dict) or not payload.get('next') or len(rows) > limit:
+            break
+    return rows
 
 def announcements():
-    """Read the existing announcement table when deployment settings are available."""
-    try:
-        database_url = st.secrets["DATABASE_URL"]
-    except Exception:
+    """Fetch announcements from the Django REST API."""
+    if not api_enabled():
         return []
-    try:
-        import psycopg
-        with psycopg.connect(database_url) as connection:
-            with connection.cursor() as cursor:
-                cursor.execute("SELECT title, content, created_at FROM announcements_announcement ORDER BY created_at DESC LIMIT 3")
-                return cursor.fetchall()
-    except Exception:
-        # TODO: [後端提供公告 API、可觀測性與不洩漏技術細節的錯誤回應。]
+    payload = api_request("GET", "announcements/", params={"page_size": 3})
+    if payload is None:
         return []
+    rows = []
+    for item in api_items(payload):
+        rows.append((
+            item.get("title", ""),
+            item.get("content", ""),
+            item.get("date") or item.get("created_at", "")[:10],
+        ))
+    return rows
 
 #Language：中、英
 TEXT["zh-TW"].update(
     {
+        "confirm_delete": "確認永久刪除此貼文",
+        "image_error": "目前支援一張 jpg、png 或 webp 封面，大小不得超過 5MB。",
+        "register_success": "註冊成功，請登入。",
+        "api_failure": "目前無法完成連線請求，請稍後重試。",
         "open_listing": "查看貼文",
         "filters": "篩選條件",
         "hero_eyebrow": "台北 · 城市佈告欄",
@@ -193,6 +220,10 @@ TEXT["zh-TW"].update(
 )
 TEXT["en"].update(
     {
+        "confirm_delete": "Confirm permanent deletion of this listing",
+        "image_error": "Upload one jpg, png, or webp cover image, no larger than 5MB.",
+        "register_success": "Account created. Please log in.",
+        "api_failure": "The request could not be completed. Please try again later.",
         "open_listing": "View listing",
         "filters": "Filters",
         "hero_eyebrow": "Taipei · City Bulletin",
@@ -527,7 +558,10 @@ def home():
             category_card(index, item)
 
     section_head(t("hot_listings"), "🔥")
-    hot_rows = sorted(all_listings(), key=lambda x: x.get("views", 0), reverse=True)[:3]
+    hot_remote = remote_listings(ordering="-views") if api_enabled() else None
+    hot_rows = hot_remote[:3] if hot_remote is not None else sorted(
+        all_listings(), key=lambda x: x.get("views", 0), reverse=True
+    )[:3]
     if hot_rows:
         for row in hot_rows:
             card(row, ns="hot")
@@ -776,9 +810,7 @@ def card(row, ns="list"):
 
 def detail(ident):
     remote = api_request("GET", f"listings/{ident}/") if api_enabled() else None
-    row = api_listing(remote) if remote is not None else next(
-        (item for item in all_listings() if item["id"] == ident), None
-    )
+    row = api_listing(remote) if remote is not None else None
     if not row or row["status"] in {"removed", "expired"}:
         st.warning(t("not_available"))
         if st.button(t("back_home"), key="detail_back", type="secondary"):
@@ -911,34 +943,37 @@ def login():
                     t("login"), type="primary", width="stretch"
                 )
             if submitted:
-                if api_enabled():
-                    result = api_request("POST", "auth/login/", payload={
-                        "email": email.strip(), "password": password,
-                    })
-                    if result is None:
-                        st.error(t("invalid_login"))
-                        return
-                    user = result.get("user", {})
-                    st.session_state["access_token"] = result.get("access")
-                    st.session_state["refresh_token"] = result.get("refresh")
-                    st.session_state["user"] = {
-                        "id": user.get("id"), "email": user.get("email", email.strip()),
-                        "name": user.get("display_name") or email.split("@")[0],
-                    }
-                elif re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email.strip()) and len(password) >= 8:
-                    st.session_state["user"] = {"email": email.strip(), "name": email.split("@")[0]}
-                else:
+                if not api_enabled():
+                    st.error("服務尚未連線，請稍後再試。" if st.session_state["lang"] == "zh-TW" else "Service unavailable, please try again later.")
+                    return
+                result = api_request("POST", "auth/login/", payload={
+                    "email": email.strip(), "password": password,
+                })
+                if result is None:
                     st.error(t("invalid_login"))
                     return
+                user = result.get("user", {})
+                st.session_state["access_token"] = result.get("access")
+                st.session_state["refresh_token"] = result.get("refresh")
+                st.session_state["user"] = {
+                    "id": user.get("id"), "email": user.get("email", email.strip()),
+                    "name": user.get("display_name") or email.split("@")[0],
+                }
                 if st.session_state["user"]:
                     st.success(t("login_success"))
                     pending = st.session_state.pop("pending")
                     if pending:
                         action, target = pending
                         if action == "favorite":
-                            st.session_state["favorites"].add(target)
+                            result = api_request("POST", f"listings/{target}/favorite/")
+                            if result is not None:
+                                st.session_state["favorites"].add(target)
                         if action in {"contact", "report"}:
                             st.session_state[action] = target
+                        if action == "post":
+                            route(page="post")
+                        if action == "me":
+                            route(page="me")
                         route(page="listing", id=target)
                     route(page="home")
             st.markdown(
@@ -1077,7 +1112,8 @@ def post_page():
                     st.error(f"{t('description')}: {t('description_hint')}")
                     has_error = True
                     
-                too_big = len(files) > 8 or any(item.size > 5 * 1024 * 1024 for item in files)
+                # TODO: [目前後端只支援一張封面；多圖需新增 ListingImage 模型與 API。]
+                too_big = len(files) > 1 or any(item.size > 5 * 1024 * 1024 for item in files)
                 if too_big:
                     st.error(t("image_error"))
                     has_error = True
@@ -1178,6 +1214,10 @@ def profile():
                 st.session_state["user"] = None
                 st.session_state["access_token"] = None
                 st.session_state["refresh_token"] = None
+                for key, value in {'favorites': set(), 'created': [], 'drafts': [], 'history': [], 'pending': None}.items():
+                    st.session_state[key] = value
+                for key in ['edit_target', 'contact', 'report']:
+                    st.session_state.pop(key, None)
                 route(page="home")
 
     section_keys = ["favorites", "my_listings", "messages", "notifications", "history", "settings"]
@@ -1203,7 +1243,11 @@ def profile():
                 with col2:
                     if st.button(t("edit"), key=f"edit_{row['id']}", width="stretch"):
                         st.session_state["edit_target"] = row; route(page="edit")
-                    if st.button(t("delete"), key=f"del_{row['id']}", type="secondary", width="stretch"):
+                    if row['status'] == 'active' and st.button(t('mark_sold'), key=f"sold_{row['id']}"):
+                        if api_request('POST', f"listings/{row['id']}/mark_sold/") is not None:
+                            st.rerun()
+                    confirmed = st.checkbox(t('confirm_delete'), key=f"confirm_delete_{row['id']}")
+                    if st.button(t("delete"), key=f"del_{row['id']}", type="secondary", width="stretch", disabled=not confirmed):
                         result = api_request("DELETE", f"listings/{row['id']}/") if api_enabled() else {}
                         if result is not None:
                             if row in st.session_state["created"]: st.session_state["created"].remove(row)
