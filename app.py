@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import re
 from datetime import date
 
+import requests
 import streamlit as st
 import streamlit.components.v1 as components
 from catalog import CATEGORIES, DISTRICTS, MAIN_CATEGORIES, MOCK_LISTINGS
@@ -31,7 +33,12 @@ def init():
     p = st.query_params
     st.session_state.setdefault("lang", str(p.get("lang", "zh-TW")) if str(p.get("lang", "zh-TW")) in TEXT else "zh-TW")
     st.session_state.setdefault("theme", str(p.get("theme", "light")) if str(p.get("theme", "light")) in {"light", "dark"} else "light")
-    for key, value in {"user":None,"favorites":set(),"drafts":[],"created":[],"pending":None,"history":[]}.items(): st.session_state.setdefault(key, value)
+    for key, value in {
+        "user": None, "favorites": set(), "drafts": [], "created": [],
+        "pending": None, "history": [], "access_token": None,
+        "refresh_token": None, "api_error": None,
+    }.items():
+        st.session_state.setdefault(key, value)
 
 def t(key, **data): return (TEXT[st.session_state["lang"]].get(key) or TEXT["zh-TW"].get(key) or "").format(**data)
 def route(**data):
@@ -47,6 +54,100 @@ def cname(slug):
     return slug
 def price(v): return t("negotiable") if v is None else f"NT${v:,.0f}"
 def all_listings(): return list(MOCK_LISTINGS) + st.session_state["created"]
+
+
+def api_base_url():
+    """Return the optional deployed Django API address without exposing secrets."""
+    try:
+        configured = st.secrets.get("API_BASE_URL", "")
+    except Exception:
+        configured = ""
+    return (configured or os.getenv("CL_TAIPEI_API_BASE_URL", "")).rstrip("/")
+
+
+def api_enabled():
+    return bool(api_base_url())
+
+
+def api_items(payload):
+    """DRF pagination returns results, while unpaginated responses are lists."""
+    if isinstance(payload, dict):
+        return payload.get("results", [])
+    return payload if isinstance(payload, list) else []
+
+
+def api_listing(item):
+    """Map the Django ListingSerializer response to this UI's stable card shape."""
+    seller = item.get("seller") or {}
+    return {
+        "id": str(item.get("id", "")),
+        "category": item.get("category", ""),
+        "sub": item.get("sub", ""),
+        "title": item.get("title", ""),
+        "description": item.get("description", ""),
+        "price": item.get("price"),
+        "district": item.get("district", ""),
+        "created": item.get("created", ""),
+        "status": item.get("status", "active"),
+        "seller": seller.get("display_name", ""),
+        "seller_id": seller.get("id"),
+        "views": item.get("views", 0),
+        "is_favorited": bool(item.get("is_favorited")),
+        "cover_image": item.get("cover_image"),
+        "contact_method": item.get("contact_method", "internal"),
+        "show_email": bool(item.get("show_email")),
+    }
+
+
+def api_request(method, path, *, params=None, payload=None, files=None):
+    """Make an authenticated request and refresh an expired access token once."""
+    base = api_base_url()
+    if not base:
+        return None
+    url = f"{base}/{path.lstrip('/')}"
+
+    def send(access_token=None):
+        headers = {"Accept": "application/json"}
+        if access_token:
+            headers["Authorization"] = f"Bearer {access_token}"
+        request_kwargs = {"headers": headers, "params": params, "timeout": 12}
+        if files is not None:
+            request_kwargs["data"] = payload or {}
+            request_kwargs["files"] = files
+        elif payload is not None:
+            request_kwargs["json"] = payload
+        return requests.request(method, url, **request_kwargs)
+
+    try:
+        response = send(st.session_state.get("access_token"))
+        if response.status_code == 401 and st.session_state.get("refresh_token"):
+            refresh = requests.post(
+                f"{base}/auth/refresh/",
+                json={"refresh": st.session_state["refresh_token"]},
+                timeout=12,
+            )
+            if refresh.ok:
+                st.session_state["access_token"] = refresh.json().get("access")
+                response = send(st.session_state["access_token"])
+        if response.status_code == 204:
+            st.session_state["api_error"] = None
+            return {}
+        if not response.ok:
+            detail = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+            st.session_state["api_error"] = detail.get("detail") or detail or response.status_code
+            return None
+        st.session_state["api_error"] = None
+        return response.json()
+    except requests.RequestException:
+        st.session_state["api_error"] = "unavailable"
+        return None
+
+
+def remote_listings(**filters):
+    if not api_enabled():
+        return None
+    payload = api_request("GET", "listings/", params={key: value for key, value in filters.items() if value not in (None, "")})
+    return None if payload is None else [api_listing(item) for item in api_items(payload)]
 
 def announcements():
     """Read the existing announcement table when deployment settings are available."""
@@ -296,6 +397,14 @@ def favorite(listing_id, key):
         width="stretch",
     ):
         if require_login("favorite", listing_id):
+            if api_enabled():
+                result = api_request(
+                    "DELETE" if saved else "POST",
+                    f"listings/{listing_id}/favorite/",
+                )
+                if result is None:
+                    st.error(t("form_error"))
+                    return
             st.session_state["favorites"].symmetric_difference_update({listing_id})
             st.rerun()
 
@@ -501,15 +610,16 @@ def listing_list(cat=None, sub=None, q=""):
     has_low = bool(str(params.get("low", "")))
     has_high = bool(str(params.get("high", "")))
     thousand_default = str(params.get("k", "")) == "1"
-    result_count = len(
-        matches(
-            cat,
-            sub,
-            initial_q,
-            initial_district,
-            initial_low or None,
-            initial_high if initial_high < 9_999_999 else None,
-        )
+    order_map = {"newest": "-created_at", "low": "price", "high": "-price", "nearest": "-created_at"}
+    remote_rows = remote_listings(
+        category=cat, sub=sub, q=initial_q, district=initial_district,
+        low=initial_low or None,
+        high=initial_high if initial_high < 9_999_999 else None,
+        ordering=order_map.get(initial_sort, "-created_at"),
+    )
+    result_count = len(remote_rows) if remote_rows is not None else len(
+        matches(cat, sub, initial_q, initial_district, initial_low or None,
+                initial_high if initial_high < 9_999_999 else None)
     )
     page_head(
         heading or t("search"),
@@ -579,12 +689,8 @@ def listing_list(cat=None, sub=None, q=""):
                 st.session_state["list_limit"] = 20
                 route(page="list", category=cat or "", sub=sub or "")
 
-    rows = matches(
-        cat,
-        sub,
-        initial_q,
-        initial_district,
-        initial_low or None,
+    rows = remote_rows if remote_rows is not None else matches(
+        cat, sub, initial_q, initial_district, initial_low or None,
         initial_high if initial_high < 9_999_999 else None,
     )
 
@@ -634,6 +740,8 @@ def listing_list(cat=None, sub=None, q=""):
                 st.rerun()
 
 def card(row, ns="list"):
+    if row.get("is_favorited"):
+        st.session_state["favorites"].add(row["id"])
     stat = t(row["status"]) if row["status"] in {"active", "draft", "sold", "expired"} else row["status"]
     icon = cat_icon(row["category"])
     snippet = row["description"][:96] + ("…" if len(row["description"]) > 96 else "")
@@ -667,7 +775,10 @@ def card(row, ns="list"):
             favorite(row["id"], f"fav_{ns}_{row['id']}")
 
 def detail(ident):
-    row = next((item for item in all_listings() if item["id"] == ident), None)
+    remote = api_request("GET", f"listings/{ident}/") if api_enabled() else None
+    row = api_listing(remote) if remote is not None else next(
+        (item for item in all_listings() if item["id"] == ident), None
+    )
     if not row or row["status"] in {"removed", "expired"}:
         st.warning(t("not_available"))
         if st.button(t("back_home"), key="detail_back", type="secondary"):
@@ -712,14 +823,20 @@ def detail(ident):
                     )
                     if st.form_submit_button(t("send"), type="primary"):
                         if message.strip():
-                            st.success(t("message_sent"))
-                            st.session_state.pop("contact")
+                            result = api_request("POST", "messages/", payload={
+                                "listing_id": row["id"], "body": message.strip(),
+                            }) if api_enabled() else {}
+                            if result is not None:
+                                st.success(t("message_sent"))
+                                st.session_state.pop("contact")
+                            else:
+                                st.error(t("form_error"))
                         else:
                             st.error(t("form_error"))
         if st.session_state.get("report") == row["id"]:
             with st.container(border=True, key="report-panel"):
                 with st.form("report_form", border=False):
-                    st.selectbox(
+                    reason_label = st.selectbox(
                         t("report_reason"),
                         [
                             t("report_scam"),
@@ -729,10 +846,21 @@ def detail(ident):
                             t("report_other"),
                         ],
                     )
-                    st.text_area(t("report_note"), max_chars=500)
+                    note = st.text_area(t("report_note"), max_chars=500)
                     if st.form_submit_button(t("send"), type="primary"):
-                        st.success(t("report_sent"))
-                        st.session_state.pop("report")
+                        reason_map = {
+                            t("report_scam"): "scam", t("report_spam"): "spam",
+                            t("report_inappropriate"): "inappropriate",
+                            t("report_category"): "category", t("report_other"): "other",
+                        }
+                        result = api_request("POST", f"listings/{row['id']}/report/", payload={
+                            "reason": reason_map[reason_label], "note": note.strip(),
+                        }) if api_enabled() else {}
+                        if result is not None:
+                            st.success(t("report_sent"))
+                            st.session_state.pop("report")
+                        else:
+                            st.error(t("form_error"))
 
     with aside:
         with st.container(border=True, key="detail-side"):
@@ -783,11 +911,26 @@ def login():
                     t("login"), type="primary", width="stretch"
                 )
             if submitted:
-                if re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email.strip()) and len(password) >= 8:
+                if api_enabled():
+                    result = api_request("POST", "auth/login/", payload={
+                        "email": email.strip(), "password": password,
+                    })
+                    if result is None:
+                        st.error(t("invalid_login"))
+                        return
+                    user = result.get("user", {})
+                    st.session_state["access_token"] = result.get("access")
+                    st.session_state["refresh_token"] = result.get("refresh")
                     st.session_state["user"] = {
-                        "email": email.strip(),
-                        "name": email.split("@")[0],
+                        "id": user.get("id"), "email": user.get("email", email.strip()),
+                        "name": user.get("display_name") or email.split("@")[0],
                     }
+                elif re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email.strip()) and len(password) >= 8:
+                    st.session_state["user"] = {"email": email.strip(), "name": email.split("@")[0]}
+                else:
+                    st.error(t("invalid_login"))
+                    return
+                if st.session_state["user"]:
                     st.success(t("login_success"))
                     pending = st.session_state.pop("pending")
                     if pending:
@@ -798,8 +941,6 @@ def login():
                             st.session_state[action] = target
                         route(page="listing", id=target)
                     route(page="home")
-                else:
-                    st.error(t("invalid_login"))
             st.markdown(
                 f"<p class='auth-switch'>{html.escape(t('no_account'))}</p>",
                 unsafe_allow_html=True,
@@ -858,6 +999,13 @@ def register():
                     has_error = True
                     
                 if not has_error:
+                    if api_enabled():
+                        result = api_request("POST", "auth/register/", payload={
+                            "display_name": name.strip(), "email": email.strip(), "password": password,
+                        })
+                        if result is None:
+                            st.error(t("form_error"))
+                            return
                     st.success(t("register_success"))
                     route(page="login")
                 
@@ -906,7 +1054,7 @@ def post_page():
                     type=["jpg", "jpeg", "png", "webp"],
                     accept_multiple_files=True,
                 )
-                st.radio(
+                contact_method = st.radio(
                     t("contact_method"),
                     [t("internal_message"), t("show_email")],
                 )
@@ -956,7 +1104,31 @@ def post_page():
                         "seller": st.session_state["user"]["name"],
                         "views": 0,
                     }
-                    if publish:
+                    if api_enabled():
+                        payload = {
+                            "category": cat, "sub": sub, "title": title.strip(),
+                            "description": desc.strip(),
+                            "negotiable": str(negotiable).lower(), "district": district,
+                            "status": "active" if publish else "draft",
+                            "contact_method": "message" if contact_method == t("internal_message") else "email",
+                            "show_email": str(contact_method == t("show_email")).lower(),
+                        }
+                        if not negotiable:
+                            payload["price"] = str(int(amount))
+                        upload = None
+                        if files:
+                            first = files[0]
+                            upload = {"cover_image": (first.name, first.getvalue(), first.type)}
+                        result = api_request("POST", "listings/", payload=payload, files=upload)
+                        if result is None:
+                            st.error(t("form_error"))
+                            return
+                        record = api_listing(result)
+                        if publish:
+                            st.success(t("published_success"))
+                            route(page="listing", id=record["id"])
+                        st.success(t("draft_success"))
+                    elif publish:
                         st.session_state["created"].append(record)
                         st.success(t("published_success"))
                         route(page="listing", id=record["id"])
@@ -999,62 +1171,81 @@ def profile():
             )
         with head[2]:
             if st.button(t("logout"), key="logout_top", type="secondary", width="stretch"):
+                if api_enabled():
+                    api_request("POST", "auth/logout/", payload={
+                        "refresh": st.session_state.get("refresh_token") or "",
+                    })
                 st.session_state["user"] = None
+                st.session_state["access_token"] = None
+                st.session_state["refresh_token"] = None
                 route(page="home")
 
-    tabs = st.tabs(
-        [
-            t("favorites"),
-            t("my_listings"),
-            t("messages"),
-            t("notifications"),
-            t("history"),
-            t("settings"),
-        ]
+    section_keys = ["favorites", "my_listings", "messages", "notifications", "history", "settings"]
+    section = st.radio(
+        t("account"), section_keys, format_func=t, horizontal=True,
+        label_visibility="collapsed", key="profile_section",
     )
-    with tabs[0]:
-        rows = [row for row in all_listings() if row["id"] in st.session_state["favorites"]]
+    if section == "favorites":
+        remote = api_request("GET", "favorites/") if api_enabled() else None
+        rows = [api_listing(row) for row in api_items(remote)] if remote is not None else [
+            row for row in all_listings() if row["id"] in st.session_state["favorites"]
+        ]
+        if rows:
+            for row in rows: card(row, ns="fav")
+        else: empty_state(t("empty_favorites"), "♡")
+    elif section == "my_listings":
+        remote = api_request("GET", "my-listings/") if api_enabled() else None
+        rows = [api_listing(row) for row in api_items(remote)] if remote is not None else st.session_state["created"] + st.session_state["drafts"]
         if rows:
             for row in rows:
-                card(row, ns="fav")
-        else:
-            empty_state(t("empty_favorites"), "♡")
-    with tabs[1]:
-        rows = st.session_state["created"] + st.session_state["drafts"]
-        if rows:
-            for row in rows:
-                # 這裡原本是 card(row, ns="mine")，我們改成用兩欄排版來塞按鈕
                 col1, col2 = st.columns([4, 1])
-                with col1:
-                    card(row, ns="mine")
+                with col1: card(row, ns="mine")
                 with col2:
-                    # 新增編輯按鈕
-                    if st.button("✏️ 編輯", key=f"edit_{row['id']}", width="stretch"):
-                        st.session_state["edit_target"] = row  # 記住要編輯哪一筆
-                        route(page="edit")  # 跳到編輯頁
-                    
-                    # 新增刪除按鈕
-                    if st.button("🗑️ 刪除", key=f"del_{row['id']}", type="primary", width="stretch"):
-                        if row in st.session_state["created"]:
-                            st.session_state["created"].remove(row)
-                        if row in st.session_state["drafts"]:
-                            st.session_state["drafts"].remove(row)
-                        st.rerun()
-        else:
-            empty_state(t("empty_listings"), "▤")
-    with tabs[2]:
-        empty_state(t("empty_messages"), "✉")
-    with tabs[3]:
-        empty_state(t("empty_notifications"), "◔")
-    with tabs[4]:
-        empty_state(t("empty_history"), "🕒")
-    with tabs[5]:
+                    if st.button(t("edit"), key=f"edit_{row['id']}", width="stretch"):
+                        st.session_state["edit_target"] = row; route(page="edit")
+                    if st.button(t("delete"), key=f"del_{row['id']}", type="secondary", width="stretch"):
+                        result = api_request("DELETE", f"listings/{row['id']}/") if api_enabled() else {}
+                        if result is not None:
+                            if row in st.session_state["created"]: st.session_state["created"].remove(row)
+                            if row in st.session_state["drafts"]: st.session_state["drafts"].remove(row)
+                            st.rerun()
+                        else: st.error(t("form_error"))
+        else: empty_state(t("empty_listings"), "▤")
+    elif section == "messages":
+        remote = api_request("GET", "messages/") if api_enabled() else None
+        messages = api_items(remote) if remote is not None else []
+        if messages:
+            for message in messages:
+                st.write(message.get("body", "")); st.caption(message.get("created_at", ""))
+        else: empty_state(t("empty_messages"), "✉")
+    elif section == "notifications":
+        remote = api_request("GET", "notifications/") if api_enabled() else None
+        notices = api_items(remote) if remote is not None else []
+        if notices:
+            for notice in notices:
+                st.write(notice.get("title", "")); st.caption(notice.get("body", ""))
+        else: empty_state(t("empty_notifications"), "◔")
+    elif section == "history":
+        remote = api_request("GET", "history/") if api_enabled() else None
+        history = api_items(remote) if remote is not None else []
+        if history:
+            for entry in history: card(api_listing(entry["listing"]), ns="history")
+        else: empty_state(t("empty_history"), "🕒")
+    else:
+        remote = api_request("GET", "settings/") if api_enabled() else {}
+        remote = remote or {}
         with st.container(border=True, key="settings-box"):
             with st.form("settings_form", border=False):
-                st.text_input(t("display_name"), value=user["name"])
-                st.checkbox(t("email_notification"))
+                display_name = st.text_input(t("display_name"), value=remote.get("display_name", user["name"]))
+                email_notifications = st.checkbox(t("email_notification"), value=remote.get("email_notifications", True))
                 if st.form_submit_button(t("save_preferences"), type="primary"):
-                    st.success(t("settings_saved"))
+                    result = api_request("PATCH", "settings/", payload={
+                        "display_name": display_name.strip(), "email_notifications": email_notifications,
+                    }) if api_enabled() else {}
+                    if result is not None:
+                        st.session_state["user"]["name"] = display_name.strip() or user["name"]
+                        st.success(t("settings_saved"))
+                    else: st.error(t("form_error"))
 
 def edit_page():
     if not require_login("me", ""):
@@ -1064,7 +1255,7 @@ def edit_page():
         route(page="me")
         return
 
-    page_head("編輯貼文", eyebrow=t("edit"), subtitle=t("my_listings"))
+    page_head(t("edit"), eyebrow=t("edit"), subtitle=t("my_listings"))
     with st.container(border=True, key="edit-form-box"):
         with st.form("edit_form", border=False):
             title = st.text_input(t("title"), value=row["title"], max_chars=80)
@@ -1073,7 +1264,7 @@ def edit_page():
             negotiable = st.checkbox(t("negotiable_check"), value=row["price"] is None)
             
             # 送出更新
-            if st.form_submit_button("儲存變更", type="primary", width="stretch"):
+            if st.form_submit_button(t("save"), type="primary", width="stretch"):
                 has_error = False
                 if not (4 <= len(title.strip()) <= 80):
                     st.error(f"{t('title')}: {t('title_hint')}")
@@ -1083,14 +1274,18 @@ def edit_page():
                     has_error = True
                 
                 if not has_error:
-                    # 更新資料
-                    row["title"] = title.strip()
-                    row["description"] = desc.strip()
-                    row["price"] = None if negotiable else int(amount)
-                    
-                    # 清除暫存並返回
+                    payload = {
+                        "title": title.strip(), "description": desc.strip(),
+                        "price": None if negotiable else int(amount),
+                        "negotiable": negotiable,
+                    }
+                    result = api_request("PATCH", f"listings/{row['id']}/", payload=payload) if api_enabled() else {}
+                    if result is None:
+                        st.error(t("form_error"))
+                        return
+                    row.update(payload)
                     del st.session_state["edit_target"]
-                    st.success("更新成功！")
+                    st.success(t("settings_saved"))
                     route(page="me")
 
 def not_found():

@@ -436,11 +436,11 @@ a{{color:var(--primary);}}
 [data-testid="stSlider"] [data-testid="stSliderTickBarMin"],[data-testid="stSlider"] [data-testid="stSliderTickBarMax"]{{color:var(--text-muted)!important;}}
 
 /* ---------- Tabs ---------- */
-.stTabs [data-baseweb="tab-list"]{{
+.stTabs [data-baseweb="tab-list"],.stTabs [role="tablist"]{{
   background:var(--surface);border:1px solid var(--border);border-radius:999px;
   padding:.3rem;gap:.2rem;
 }}
-.stTabs [data-baseweb="tab"]{{
+.stTabs [data-baseweb="tab"],.stTabs [role="tab"]{{
   border-radius:999px;padding:.45rem .95rem;color:var(--text-muted);
   font-weight:600;font-size:.83rem;
 }}
@@ -457,7 +457,7 @@ ul.tips li{{color:var(--text-muted)!important;margin-bottom:.35rem;}}
 .auth-switch{{text-align:center;color:var(--text-muted)!important;font-size:.82rem;margin:.9rem 0 .2rem;}}
 .avatar-lg{{width:56px;height:56px;font-size:1rem;}}
 .stButton button p,.stFormSubmitButton button p,[data-testid^="stBaseButton"] p{{color:inherit!important;}}
-.stTabs [data-baseweb="tab"] p{{color:inherit!important;}}
+.stTabs [data-baseweb="tab"] p,.stTabs [role="tab"] p,.stTabs [role="tab"] *{{color:inherit!important;}}
 [class*="st-key-notice-board"]{{padding:1rem 1.3rem!important;}}
 [class*="st-key-post-tips"]{{padding:1.2rem 1.3rem!important;}}
 [class*="st-key-filter-box"]{{padding:1.1rem 1.15rem!important;}}
